@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyEDA"
+version = "0.1.0"
+description = "EDA-NOCV with PySCF"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "pyscf>=2.3",
+    "h5py",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["pyEDA*"]
