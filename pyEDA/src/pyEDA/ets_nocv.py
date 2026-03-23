@@ -172,11 +172,11 @@ class ETS_NOCV:
     @timer()
     def dE_elec_nuc(self) -> np.float64:
         result = 0.0
-        V_nuc_mol = self.mf_molecule.mol.intor("int1e_nuc")
+        V_nuc_mol = self.mf_molecule.mol.intor("int1e_nuc")+ self.mf_molecule.mol.intor("ECPscalar")
 
         for mf_frag, P_frag in zip(self.mf_fragments, self.P_fragments):
             P_frag = self.P_tot(P_frag)
-            V_nuc_frag = mf_frag.mol.intor("int1e_nuc")
+            V_nuc_frag = mf_frag.mol.intor("int1e_nuc") + mf_frag.mol.intor("ECPscalar")
             dV = V_nuc_mol - V_nuc_frag
             result += np.einsum("pq,pq->", dV, P_frag, optimize=True)
 
