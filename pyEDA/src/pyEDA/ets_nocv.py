@@ -1,8 +1,9 @@
 import numpy as np
 from numpy.typing import NDArray
 from scipy import linalg
-from .utils import timer
 from pyscf import scf, tools
+from .utils import timer
+from copy import deepcopy
 
 
 class ETS_NOCV:
@@ -28,7 +29,7 @@ class ETS_NOCV:
             )
 
         self.molecule_ovlp = self.mf_molecule.get_ovlp()
-        self._initial_elec_energy = self._get_scf_elec_energy()
+        # self._initial_elec_energy = self._get_scf_elec_energy()
 
         self.C_ij_pro = None
         self.C_ij_frozen = None
@@ -125,11 +126,11 @@ class ETS_NOCV:
 
     @timer()
     def build_Cij_frozen(self, C_ij_pro: NDArray[np.float64]) -> NDArray[np.float64]:
-        S_pro = C_ij_pro.T @ self.molecule_ovlp @ C_ij_pro
+        S_pro = C_ij_pro.conj().T @ self.molecule_ovlp @ C_ij_pro
         eigvals, eigvecs = np.linalg.eigh(S_pro)
 
         S_inv_sqrt = 1.0 / np.sqrt(eigvals)
-        X = (eigvecs * S_inv_sqrt) @ eigvecs.T
+        X = (eigvecs * S_inv_sqrt) @ eigvecs.conj().T
 
         return C_ij_pro @ X
 
@@ -172,11 +173,22 @@ class ETS_NOCV:
     @timer()
     def dE_elec_nuc(self) -> np.float64:
         result = 0.0
-        V_nuc_mol = self.mf_molecule.mol.intor("int1e_nuc")+ self.mf_molecule.mol.intor("ECPscalar")
+        V_nuc_mol = (
+            (
+                self.mf_molecule.mol.intor("int1e_nuc")
+                + self.mf_molecule.mol.intor("ECPscalar")
+            )
+            if self.mf_molecule.mol.has_ecp()
+            else (self.mf_molecule.mol.intor("int1e_nuc"))
+        )
 
         for mf_frag, P_frag in zip(self.mf_fragments, self.P_fragments):
             P_frag = self.P_tot(P_frag)
-            V_nuc_frag = mf_frag.mol.intor("int1e_nuc") + mf_frag.mol.intor("ECPscalar")
+            V_nuc_frag = (
+                (mf_frag.mol.intor("int1e_nuc") + mf_frag.mol.intor("ECPscalar"))
+                if mf_frag.mol.has_ecp()
+                else mf_frag.mol.intor("int1e_nuc")
+            )
             dV = V_nuc_mol - V_nuc_frag
             result += np.einsum("pq,pq->", dV, P_frag, optimize=True)
 
@@ -189,7 +201,7 @@ class ETS_NOCV:
     def dE_FRZ(self) -> tuple[np.float64, np.float64]:
         E_FRZ = self.mf_molecule.energy_elec(dm=self.P_frozen)[0]
         dE_Pauli = E_FRZ - self.mf_molecule.energy_elec(dm=self.P_pro)[0]
-        dE_orb = self._initial_elec_energy - E_FRZ
+        dE_orb = self.mf_molecule.energy_elec(dm=self.P_molecule)[0] - E_FRZ
         return dE_Pauli, dE_orb
 
     @timer()
@@ -243,11 +255,11 @@ class ETS_NOCV:
         orb_ene = np.diag(F_nocv)
 
         self.NOCV[label] = {
-            "eigenvalues": eigvals,
-            "eigenvectors_orth": eigvecs,
-            "coefficients_ao": coef_ao,
+            "eigenvalues": eigvals.real,
+            "eigenvectors_orth": eigvecs.real,
+            "coefficients_ao": coef_ao.real,
             "F_nocv": F_nocv,
-            "orbital_energies": orb_ene,
+            "orbital_energies": orb_ene.real,
         }
 
         self.NOCV[label]["total_orbital_energy"] = np.sum(eigvals * orb_ene)
@@ -370,3 +382,78 @@ class U_ETS_NOCV(ETS_NOCV):
         dP = self.dP_orb
         F = self.build_F_ij_TS()
         return F, dP
+
+
+class G_ETS_NOCV(ETS_NOCV):
+    def __init__(self, mf_molecule, mf_fragments):
+        super().__init__(mf_molecule, mf_fragments)
+
+    @timer()
+    def build_frozen_density(self) -> NDArray[np.float64]:
+        self.C_ij_pro = self.build_Cij_pro()
+        self.C_ij_frozen = self.build_Cij_frozen(self.C_ij_pro)
+        return self.C_ij_frozen @ self.C_ij_frozen.conj().T
+
+    @timer()
+    def build_Cij_frozen(self, C_ij_pro: NDArray[np.float64]) -> NDArray[np.float64]:
+        S_pro = C_ij_pro.conj().T @ self.molecule_ovlp @ C_ij_pro
+        print(S_pro)
+        eigvals, eigvecs = np.linalg.eigh(S_pro)
+        print(eigvals)
+        S_inv_sqrt = 1.0 / np.sqrt(eigvals)
+        print(S_inv_sqrt)
+        X = (eigvecs * S_inv_sqrt) @ eigvecs.conj().T
+
+        return C_ij_pro @ X
+
+    @timer()
+    def dE_elec_nuc(self) -> np.float64:
+        result = 0.0
+        V_nuc_mol = (
+            (
+                self.mf_molecule.mol.intor("int1e_nuc")
+                + self.mf_molecule.mol.intor("ECPscalar")
+            )
+            if self.mf_molecule.mol.has_ecp()
+            else (self.mf_molecule.mol.intor("int1e_nuc"))
+        )
+        V_nuc_mol = linalg.block_diag(V_nuc_mol, V_nuc_mol)
+
+        for mf_frag, P_frag in zip(self.mf_fragments, self.P_fragments):
+            P_frag = self.P_tot(P_frag)
+            V_nuc_frag = (
+                (mf_frag.mol.intor("int1e_nuc") + mf_frag.mol.intor("ECPscalar"))
+                if mf_frag.mol.has_ecp()
+                else mf_frag.mol.intor("int1e_nuc")
+            )
+            V_nuc_frag = linalg.block_diag(V_nuc_frag, V_nuc_frag)
+            dV = V_nuc_mol - V_nuc_frag
+            result += np.einsum("pq,pq->", dV, P_frag, optimize=True)
+
+        return result
+
+    @timer()
+    def solve_nocv(self, label, dP, F, sqrtS0, A0) -> None:
+        dP_orth = sqrtS0 @ dP @ sqrtS0
+        dP_orth = 0.5 * (dP_orth + dP_orth.conj().T)
+
+        eigvals, eigvecs = np.linalg.eigh(dP_orth)
+        idx = np.argsort(eigvals)
+        eigvals = eigvals[idx]
+        eigvecs = eigvecs[:, idx]
+
+        coef_ao = A0 @ eigvecs
+
+        F_orth = A0 @ F @ A0
+        F_nocv = eigvecs.conj().T @ F_orth @ eigvecs
+        orb_ene = np.diag(F_nocv)
+
+        self.NOCV[label] = {
+            "eigenvalues": eigvals,
+            "eigenvectors_orth": eigvecs,
+            "coefficients_ao": coef_ao,
+            "F_nocv": F_nocv,
+            "orbital_energies": orb_ene,
+        }
+
+        self.NOCV[label]["total_orbital_energy"] = np.sum(eigvals * orb_ene).real
